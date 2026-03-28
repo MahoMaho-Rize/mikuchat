@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+mikuchat
+.bun
+/tmp/
+*.map
+test-*.sh
+test-*.tsx
