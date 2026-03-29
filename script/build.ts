@@ -21,8 +21,8 @@ await Bun.build({
   target: "bun",
   sourcemap: "external",
   define: {
-    OPENCODE_VERSION: "'0.1.0'",
-    OPENCODE_WORKER_PATH: "'./src/tui/worker.ts'",
+    MIKUCHAT_VERSION: "'0.0.0'",
+    MIKUCHAT_WORKER_PATH: "''",
   },
 })
 

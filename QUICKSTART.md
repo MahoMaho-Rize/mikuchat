@@ -1,45 +1,93 @@
 # MikuChat Quickstart
 
-Terminal-based QQ chat client with Miku aesthetics. Built on OpenTUI + NapCat + OneBot 11.
+Terminal-based QQ chat client with Miku aesthetics. Built on Bun + SolidJS + OpenTUI + NapCat (OneBot 11).
 
 ## Prerequisites
 
-| Requirement | Version | Why |
-|---|---|---|
-| [Bun](https://bun.sh) | >= 1.1 | Runtime (uses `bun:sqlite`, JSX transform) |
-| [Kitty](https://sw.kovidgoyal.net/kitty/) | >= 0.28 | Terminal with graphics protocol support |
-| [NapCat](https://github.com/NapNeko/NapCatQQ) | latest | QQ headless client (OneBot 11 backend) |
-| [Xvfb](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml) | any | Virtual display for headless QQ |
-| [sharp](https://sharp.pixelplumbing.com/) | (bundled) | JPEG→PNG conversion for Kitty image rendering |
+### Required
 
-## Step 1: Install NapCat
+| Dependency | Version | Description |
+|---|---|---|
+| [Bun](https://bun.sh) | >= 1.1 | Runtime (`bun:sqlite`, JSX, native bundler) |
+| [Kitty](https://sw.kovidgoyal.net/kitty/) | >= 0.28 | Terminal — Kitty Graphics Protocol + keyboard protocol |
+| [NapCat](https://github.com/NapNeko/NapCatQQ) | latest | QQ headless backend (OneBot 11 WebSocket) |
+| [Xvfb](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml) | any | Virtual X display for headless QQ (only if launching NapCat from MikuChat) |
+
+### Bundled (installed by `bun install`)
+
+| Package | Purpose |
+|---|---|
+| `solid-js` + `@opentui/solid` | Reactive UI framework + terminal renderer |
+| `sharp` | JPEG/WebP to PNG conversion for Kitty image rendering (requires `libvips` native lib) |
+| `zod` | Event validation |
+| `fuzzysort` | Fuzzy search for sessions |
+
+### Optional (system)
+
+| Tool | When needed |
+|---|---|
+| `xclip` / `xsel` / `wl-copy` | Clipboard support on Linux (X11 / Wayland) |
+
+> **Note**: SQLite is built into Bun (`bun:sqlite`), no external installation needed.
+
+## Install
+
+### 1. Install Bun
 
 ```bash
-# Download NapCat (includes QQ binary)
-# See: https://github.com/NapNeko/NapCatQQ/releases
-# Extract to e.g. ~/Napcat/
+curl -fsSL https://bun.sh/install | bash
+```
 
-# Verify QQ binary exists
+### 2. Install NapCat + QQ
+
+Download from [NapCat releases](https://github.com/NapNeko/NapCatQQ/releases) and extract:
+
+```bash
+# Example: extract to ~/Napcat/
+mkdir -p ~/Napcat && cd ~/Napcat
+# Download and extract the release archive here
+
+# Verify the QQ binary exists:
 ls ~/Napcat/opt/QQ/qq
 ```
 
-## Step 2: Configure NapCat
-
-First run NapCat once manually to generate config, then edit:
+### 3. Install Xvfb (if launching NapCat from MikuChat)
 
 ```bash
-# Find config file (replace YOUR_QQ_NUMBER):
+# Debian/Ubuntu
+sudo apt install xvfb
+
+# Arch
+sudo pacman -S xorg-server-xvfb
+
+# Not needed if you run NapCat separately
+```
+
+### 4. Clone and install MikuChat
+
+```bash
+git clone <repo-url> ~/mikuchat
+cd ~/mikuchat
+bun install
+```
+
+## Configure NapCat
+
+Run NapCat once manually to generate its config, then edit the OneBot 11 WebSocket settings:
+
+```bash
+# Replace YOUR_QQ_NUMBER with your actual QQ number:
 nano ~/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/onebot11_YOUR_QQ_NUMBER.json
 ```
 
-Ensure these settings:
+Required settings:
 
 ```json
 {
   "network": {
     "websocketServers": [
       {
-        "name": "qqterm",
+        "name": "mikuchat",
         "enable": true,
         "host": "0.0.0.0",
         "port": 3001,
@@ -53,190 +101,198 @@ Ensure these settings:
 }
 ```
 
-**Critical**: `reportSelfMessage: true` — without this, your own sent messages won't appear in chat.
+**Critical**: `"reportSelfMessage": true` — without this your own sent messages won't appear.
 
-## Step 3: Install MikuChat
+## Build & Install
+
+### One-liner (recommended)
 
 ```bash
-git clone <repo-url> ~/mikuchat
-cd ~/mikuchat
-bun install
+cd ~/mikuchat && ./install.sh
 ```
 
-## Step 4: Run
+`install.sh` does everything:
+1. Checks `bun` is installed
+2. `bun install` + `bun run build` (compiles to `dist/`)
+3. Installs `/usr/local/bin/mikuchat` (requires `sudo`)
+4. Checks runtime dependencies (Kitty, Xvfb, NapCat QQ binary) and warns if missing
+
+### Manual steps
 
 ```bash
-# Option A: Run from source (development)
 cd ~/mikuchat
-bun run dev
-
-# Option B: Install as global command
-sudo tee /usr/local/bin/mikuchat << 'EOF'
+bun install
+bun run build
+sudo tee /usr/local/bin/mikuchat << EOF
 #!/bin/bash
-cd ~/mikuchat && exec bun run --conditions=browser ./src/main.tsx "$@"
+cd $HOME/mikuchat && exec bun dist/main.js "\$@"
 EOF
 sudo chmod +x /usr/local/bin/mikuchat
+```
 
-# Then run from anywhere:
+### Run
+
+```bash
+# Production (compiled bundle, fast startup)
+mikuchat
+
+# Development (from source, live changes)
+bun run dev
+```
+
+## Configure MikuChat
+
+### QQ binary path
+
+MikuChat auto-detects the QQ binary by probing these locations in order:
+
+1. `$NAPCAT_QQ_PATH` (environment variable — highest priority)
+2. `~/NapCat/opt/QQ/qq`
+3. `~/Napcat/opt/QQ/qq`
+4. `~/.local/share/NapCat/opt/QQ/qq`
+5. `/opt/QQ/qq`
+
+If your NapCat is installed elsewhere, set the env var:
+
+```bash
+export NAPCAT_QQ_PATH=/path/to/your/qq
 mikuchat
 ```
 
-## Step 5: Connect to QQ
+Or add it to your shell profile (`~/.bashrc` / `~/.zshrc`).
 
-Once MikuChat is running, you'll see the home screen with the MIKUCODE logo and a Miku braille art background.
+### WebSocket URL
 
-### Option A: Auto-start NapCat from MikuChat
-
-```
-/start
-```
-
-This launches Xvfb + NapCat + connects WebSocket automatically. First-time login requires QR code scan — the QR URL will appear in the command log.
-
-### Option B: Connect to existing NapCat
-
-If NapCat is already running separately:
+The default NapCat WebSocket endpoint is `ws://127.0.0.1:3001/`. The `/connect` command uses this by default. To change it, pass the URL as an argument:
 
 ```
-/connect
+/connect ws://192.168.1.100:3001
 ```
 
-Connects to `ws://127.0.0.1:3001/` by default.
+## Connect to QQ
+
+### Option A: Auto-start NapCat
+
+Type `/start` on the home screen. This launches Xvfb + NapCat and connects the WebSocket automatically. First login requires scanning a QR code — the URL appears in the command log.
+
+### Option B: Connect to running NapCat
+
+If NapCat is already running separately, type `/connect` to connect to `ws://127.0.0.1:3001/`.
 
 ## Usage
 
-### Home Screen Commands
+### Home screen commands
 
 | Command | Description |
 |---|---|
-| `/start` | Start NapCat and connect |
+| `/start` | Launch NapCat + connect |
 | `/connect` | Connect to running NapCat |
 | `/disconnect` | Disconnect WebSocket |
 | `/stop` | Stop NapCat (only if started by MikuChat) |
 | `/status` | Show connection status |
-| `exit` | Quit MikuChat |
+| `exit` | Quit |
 
 ### Navigation
 
 | Key | Action |
 |---|---|
-| `Ctrl+K` | Search conversations (fuzzy search by name/ID) |
+| `Ctrl+K` | Fuzzy search conversations |
+| `Ctrl+B` | Toggle sidebar |
 | `Ctrl+C` | Quit |
 | Click session | Open chat |
 
-### Chat Screen
+### Chat
 
 | Key | Action |
 |---|---|
 | `Enter` | Send message |
 | `Meta+Enter` | New line |
-| `Ctrl+B` | Toggle sidebar |
-| `/back` or `/home` | Return to home |
+| `PageUp` / `PageDown` | Scroll history |
+| `Home` | Load older messages / jump to top |
+| `End` | Jump to latest (unfreeze scroll) |
+| `/back` or `/home` | Return to home screen |
+| `/img ~/path.png` | Send an image |
 
-## File Locations
+### Scroll behavior
+
+When you scroll up to browse history, MikuChat freezes the view so new incoming messages don't interrupt you. A `↓ N new messages` indicator appears at the bottom. Press `End` or click the indicator to catch up.
+
+## File locations
 
 | Path | Contents |
 |---|---|
 | `~/.local/share/mikuchat/qc.db` | SQLite database (sessions + messages) |
-| `~/.cache/mikuchat/images/` | Downloaded image cache (JPEG→PNG converted) |
-| `~/.config/mikuchat/` | Config directory (reserved for future use) |
+| `~/.cache/mikuchat/images/` | Downloaded image cache |
+| `~/.config/mikuchat/` | Config directory (reserved) |
 
-## Customization
+## Theming
 
-### NapCat Path
-
-Edit `src/qq/napcat.ts` line 14:
-
-```typescript
-const DEFAULT_QQ_PATH = "/home/youruser/Napcat/opt/QQ/qq"
-```
-
-### WebSocket URL
-
-Edit `src/qq/client.ts` line 27:
-
-```typescript
-constructor(url = "ws://127.0.0.1:3001/", token = "") {
-```
-
-### Theme
-
-The Miku theme is at `src/tui/context/theme/miku.json`. Key colors:
+The default theme is `miku` (teal + pink). Key colors:
 
 | Token | Value | Description |
 |---|---|---|
-| `background` | `#0A1A1E` | Deep teal-black (the "fluorescent" base) |
+| `background` | `#0A1A1E` | Deep teal-black |
 | `primary` | `#39C5BB` | Miku teal |
 | `secondary` | `#E12885` | Miku pink |
-| `border` | `#E5C07B` | Warm yellow card borders |
+| `border` | `#E5C07B` | Warm yellow |
 
-To switch themes at runtime, the theme system supports all OpenCode built-in themes. The default is `miku`.
+34 built-in themes are available. Custom themes can be placed in `.mikuchat/themes/` as JSON files.
 
 ## Troubleshooting
 
-### Black background instead of teal-tinted
-
-The `getCustomThemes()` function may be failing silently and resetting the theme to `opencode`. Check that the miku theme is correctly loaded by verifying the background isn't pure black (`#0A0A0A`). The miku background should have a visible deep teal tint (`#0A1A1E`).
-
 ### Images not rendering
 
-1. **Must use Kitty terminal** — other terminals don't support Kitty Graphics Protocol
-2. **JPEG images fail silently** — MikuChat converts via `sharp`, ensure it's installed (`bun install`)
-3. **OpenTUI intercepts stdout** — image rendering uses `fs.writeSync(1, ...)` to bypass
+1. **Must use Kitty terminal** — other terminals lack the Graphics Protocol
+2. Ensure `sharp` installed correctly (`bun install`) — it needs `libvips` native bindings
+3. Image rendering uses `fs.writeSync(1, ...)` to bypass OpenTUI's stdout interception
 
 ### NapCat won't start
 
-1. Verify QQ binary path: `ls ~/Napcat/opt/QQ/qq`
-2. Verify Xvfb is available: `which Xvfb`
-3. Check if port 3001 is already in use: `lsof -i :3001`
+1. Verify QQ binary: `ls ~/Napcat/opt/QQ/qq`
+2. Verify Xvfb: `which Xvfb`
+3. Check port conflict: `lsof -i :3001`
 
-### No messages appearing after connect
+### No messages after connect
 
 1. Verify `reportSelfMessage: true` in NapCat config
 2. Check WebSocket port matches (default: 3001)
-3. Try `/status` to verify connection state
+3. Run `/status` to check connection state
 
-### Database migration after rename
-
-If upgrading from `qc-dev`, copy the old database (including WAL files):
+### Database migration from older versions
 
 ```bash
+# Copy all three files (SQLite WAL mode):
 cp ~/.local/share/qc-dev/qc.db* ~/.local/share/mikuchat/
 ```
-
-**Important**: Copy all three files (`qc.db`, `qc.db-wal`, `qc.db-shm`). SQLite WAL mode stores recent data in the WAL file — copying only the main `.db` file loses recent messages.
 
 ## Architecture
 
 ```
 src/
-  main.tsx                Entry point, provider tree, global keybinds
+  main.tsx                 Entry point, provider tree, global keybinds
   pages/
-    home.tsx              Home screen (logo, commands, session list)
-    search.tsx            Ctrl+K session search dialog
+    home.tsx               Home screen (logo, commands, session list)
+    search.tsx             Ctrl+K session search dialog
   qq/
-    client.ts             OneBot 11 WebSocket client
-    bridge.ts             WS events → SQLite bridge with dedup
-    db.ts                 SQLite CRUD (sessions, messages)
-    napcat.ts             NapCat process lifecycle manager
-    types.ts              OneBot 11 protocol types
+    client.ts              OneBot 11 WebSocket client
+    bridge.ts              WS events -> SQLite bridge with dedup
+    db.ts                  SQLite CRUD (sessions, messages)
+    layout.ts              Message height precomputation cache
+    napcat.ts              NapCat process lifecycle manager
+    types.ts               OneBot 11 protocol types
   tui/
     component/
-      chat-prompt.tsx     Chat input widget (rounded border, pills)
-      miku-background.tsx Full-screen braille art background
-      braille-scale.ts    Braille character art dynamic scaler
-      image-renderable.ts Kitty Graphics Protocol renderer
-      qq-image.tsx        QQ image download + cache + render
-      border.tsx          MikuPanelBorder, EmptyBorder, SplitBorder
+      chat-prompt.tsx      Chat input widget
+      miku-background.tsx  Full-screen braille art background
+      image-renderable.ts  Kitty Graphics Protocol renderer (Unicode Placeholders)
+      qq-image.tsx         QQ image display component
+      border.tsx           Custom border styles
     context/
-      qq.tsx              QQ connection state provider
-      chat-sync.tsx       Session/message state sync from DB
-      theme/miku.json     Miku color theme
+      qq.tsx               QQ connection state provider
+      chat-sync.tsx        Session/message sync from SQLite
+      theme/miku.json      Miku color theme
     routes/
-      chat/index.tsx      Chat page (messages, input, sidebar)
-      chat/sidebar.tsx    Session sidebar
-  stubs/                  46 stub modules for OpenCode backend deps
+      chat/index.tsx       Chat page (messages, input, sidebar)
+      chat/sidebar.tsx     Session sidebar
+  stubs/                   Stub modules for inherited OpenCode dependencies
 ```
-
-See `REFACTOR.md` for the planned multi-platform abstraction (QQ + Telegram).
-See `DEVLOG.md` for the full development log and all pitfalls encountered.

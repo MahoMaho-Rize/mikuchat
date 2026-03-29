@@ -1,5 +1,4 @@
-// Session search dialog - reuses OpenCode's DialogSelect
-// Supports fuzzy search by name, ID, and group number
+// Session search dialog - fuzzy search by name, ID, and group number
 import { createMemo } from "solid-js"
 import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
 import { useDialog } from "@tui/ui/dialog"

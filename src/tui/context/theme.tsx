@@ -343,7 +343,7 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
             if (store.active === "system") {
               setStore(
                 produce((draft) => {
-                  draft.active = "opencode";
+                  draft.active = "miku";
                   draft.ready = true;
                 }),
               );
@@ -369,7 +369,7 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
 
     const values = createMemo(() => {
       return resolveTheme(
-        store.themes[store.active] ?? store.themes.opencode,
+        store.themes[store.active] ?? store.themes.miku,
         store.mode,
       );
     });
@@ -414,7 +414,7 @@ async function getCustomThemes() {
     Global.Path.config,
     ...(await Array.fromAsync(
       Filesystem.up({
-        targets: [".opencode"],
+        targets: [".mikuchat"],
         start: process.cwd(),
       }),
     )),

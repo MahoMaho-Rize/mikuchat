@@ -2,13 +2,10 @@
 import { createMemo, For } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { scaleBraille } from "./braille-scale"
-import fs from "fs"
-import path from "path"
 
-const ART_PATH = path.resolve(import.meta.dir, "../../../assets/miku_braille.txt")
-const ART_LINES: string[] = (() => {
-  try { return fs.readFileSync(ART_PATH, "utf-8").split("\n") } catch { return [] }
-})()
+// Static import — text is inlined into the bundle by Bun.build
+import ART_TEXT from "../../../assets/miku_braille.txt"
+const ART_LINES: string[] = ART_TEXT ? ART_TEXT.split("\n") : []
 
 const MIKU_TEAL = "#39C5BB"
 

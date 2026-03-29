@@ -1,5 +1,4 @@
 // Chat sidebar - session list with unread badges
-// Borrowed pattern from OpenCode's session/sidebar.tsx
 import { createMemo, For, Show } from "solid-js";
 import { useTheme } from "@tui/context/theme";
 import { useChatSync } from "@tui/context/chat-sync";

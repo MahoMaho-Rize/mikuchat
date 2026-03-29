@@ -1,5 +1,4 @@
-// Chat Prompt - adapted from OpenCode's Prompt component
-// Full textarea interaction with customizable shortcut hints
+// Chat Prompt - full textarea input with customizable shortcut hints
 import { BoxRenderable, TextareaRenderable, MouseEvent, PasteEvent, decodePasteBytes } from "@opentui/core"
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { useTheme } from "@tui/context/theme"
@@ -164,7 +163,7 @@ export function ChatPrompt(props: ChatPromptProps) {
                   return
                 }
                 // Let textarea handle the paste natively.
-                // Only do layout fixup afterwards (same as OpenCode).
+                // Only do layout fixup afterwards.
                 setTimeout(() => {
                   if (!input || input.isDestroyed) return
                   input.getLayoutNode().markDirty()

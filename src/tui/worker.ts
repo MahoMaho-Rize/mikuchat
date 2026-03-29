@@ -57,7 +57,7 @@ const startEventStream = (input: { directory: string; workspaceID?: string }) =>
   }) as typeof globalThis.fetch
 
   const sdk = createOpencodeClient({
-    baseUrl: "http://opencode.internal",
+    baseUrl: "http://mikuchat.internal",
     directory: input.directory,
     experimental_workspaceID: input.workspaceID,
     fetch: fetchFn,
@@ -151,6 +151,6 @@ Rpc.listen(rpc)
 function getAuthorizationHeader(): string | undefined {
   const password = Flag.OPENCODE_SERVER_PASSWORD
   if (!password) return undefined
-  const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
+  const username = Flag.OPENCODE_SERVER_USERNAME ?? "mikuchat"
   return `Basic ${btoa(`${username}:${password}`)}`
 }

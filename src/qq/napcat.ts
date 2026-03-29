@@ -1,17 +1,34 @@
 // NapCat process manager - launch, monitor, stop
 import { spawn, type Subprocess } from "bun"
 import path from "path"
+import os from "os"
 import fs from "fs"
 
 export type NapCatStatus = "stopped" | "starting" | "wait_login" | "running" | "error"
 
 export interface NapCatConfig {
-  qqPath: string // path to QQ binary e.g. /home/kiriko/Napcat/opt/QQ/qq
+  qqPath: string // path to QQ binary (env NAPCAT_QQ_PATH or auto-detected)
   account?: string // QQ number for quick login
   display?: string // X display (default :99)
 }
 
-const DEFAULT_QQ_PATH = "/home/kiriko/Napcat/opt/QQ/qq"
+// Probe common NapCat installation locations
+function findQQBinary(): string {
+  const home = os.homedir()
+  const candidates = [
+    process.env.NAPCAT_QQ_PATH,                        // explicit env override
+    path.join(home, "NapCat/opt/QQ/qq"),               // ~/NapCat/opt/QQ/qq
+    path.join(home, "Napcat/opt/QQ/qq"),               // ~/Napcat/opt/QQ/qq (case variant)
+    path.join(home, ".local/share/NapCat/opt/QQ/qq"),  // XDG style
+    "/opt/QQ/qq",                                      // system-wide
+    "/usr/local/share/NapCat/opt/QQ/qq",
+  ]
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p
+  }
+  // Return the most common default; start() will report the error if it's missing
+  return path.join(home, "NapCat/opt/QQ/qq")
+}
 
 export class NapCatManager {
   private proc: Subprocess | null = null
@@ -23,7 +40,7 @@ export class NapCatManager {
 
   constructor(config?: Partial<NapCatConfig>) {
     this.config = {
-      qqPath: config?.qqPath ?? DEFAULT_QQ_PATH,
+      qqPath: config?.qqPath ?? findQQBinary(),
       account: config?.account,
       display: config?.display ?? ":99",
     }

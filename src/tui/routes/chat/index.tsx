@@ -1,5 +1,4 @@
-// Chat page - mirrors OpenCode's session/index.tsx layout exactly
-// Adapted for QQ messages with per-user colored bubbles
+// Chat page - QQ conversation view with per-user colored bubbles
 import {
   createEffect,
   createMemo,
@@ -330,7 +329,7 @@ export function ChatPage() {
             </Show>
           </box>
 
-          {/* Message scroll area - exact OpenCode pattern */}
+          {/* Message scroll area */}
           <scrollbox
             ref={(r: any) => (scroll = r)}
             viewportOptions={{
@@ -490,7 +489,7 @@ export function ChatPage() {
             </box>
           </Show>
 
-          {/* Bottom prompt area - exact OpenCode pattern */}
+          {/* Bottom prompt area */}
           <box flexShrink={0}>
             <ChatPrompt
               ref={(r) => {
@@ -523,7 +522,7 @@ export function ChatPage() {
           <Toast />
         </box>
 
-        {/* Sidebar - same pattern as OpenCode (conditional + overlay) */}
+        {/* Sidebar (conditional + overlay on narrow terminals) */}
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
