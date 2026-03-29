@@ -27,6 +27,7 @@ import {
 import { Toast, useToast } from "@tui/ui/toast";
 import { Locale } from "@/util/locale";
 import type { QCMessage, OB11Segment, OB11Message } from "../../../qq";
+import { rescale, getLayout } from "../../../qq/layout";
 import { QQImage } from "@tui/component/qq-image";
 import { MikuBackground } from "@tui/component/miku-background";
 import fs from "fs";
@@ -63,6 +64,30 @@ export function ChatPage() {
   const [showScrollbar, setShowScrollbar] = createSignal(true);
   const [noMoreHistory, setNoMoreHistory] = createSignal(false);
 
+  // --- Dual render mode: live (at bottom) vs frozen (browsing history) ---
+  // frozen=true means user is browsing history — don't touch the layout
+  const [frozen, setFrozen] = createSignal(false);
+  const [frozenLen, setFrozenLen] = createSignal(0);
+
+  // Live check — no stale signal, reads scrollbox state directly
+  function isAtBottom(): boolean {
+    if (!scroll) return true;
+    return scroll.scrollTop + scroll.height >= scroll.scrollHeight - 2;
+  }
+
+  // The messages that the <For> actually renders
+  const visibleMessages = createMemo(() => {
+    const all = messages();
+    if (!frozen()) return all;
+    return all.slice(0, frozenLen());
+  });
+
+  // Count of new messages received while browsing history
+  const pendingCount = createMemo(() => {
+    if (!frozen()) return 0;
+    return Math.max(0, messages().length - frozenLen());
+  });
+
   // Build userId -> nickname map from loaded messages (for resolving @mentions)
   const nicknameMap = createMemo(() => {
     const map = new Map<string, string>();
@@ -74,8 +99,19 @@ export function ChatPage() {
   });
 
   onMount(() => {
+    sync.setTermWidth(dimensions().width);
     sync.setActiveSession(route.sessionId);
   });
+
+  // Track terminal width changes → rescale layout (linear transform, no reflow)
+  createEffect(
+    on(
+      () => dimensions().width,
+      (w) => {
+        sync.rescaleLayout(route.sessionId, w);
+      },
+    ),
+  );
 
   // Reset noMoreHistory when switching sessions
   createEffect(
@@ -103,17 +139,40 @@ export function ChatPage() {
     }, 50);
   }
 
-  // Scroll to bottom on new messages
+  // Auto-scroll: only when NOT frozen AND scrollbox is actually at bottom
   createEffect(
     on(
       () => messages().length,
       () => {
+        if (frozen()) return;
+        // Live check right before scrolling — catches mouse wheel scrolls
         setTimeout(() => {
-          if (scroll) scroll.scrollTo(scroll.scrollHeight);
+          if (!scroll) return;
+          if (isAtBottom()) {
+            scroll.scrollTo(scroll.scrollHeight);
+          } else {
+            // User scrolled up between messages arriving — freeze now
+            setFrozenLen(messages().length);
+            setFrozen(true);
+          }
         }, 50);
       },
     ),
   );
+
+  // After keyboard scroll, check if we should freeze/unfreeze
+  function afterScroll() {
+    if (!scroll) return;
+    if (isAtBottom() && frozen()) {
+      setFrozen(false);
+      setTimeout(() => {
+        if (scroll) scroll.scrollTo(scroll.scrollHeight);
+      }, 50);
+    } else if (!isAtBottom() && !frozen()) {
+      setFrozenLen(messages().length);
+      setFrozen(true);
+    }
+  }
 
   // Keybinds
   useKeyboard((evt) => {
@@ -128,17 +187,21 @@ export function ChatPage() {
     // Scroll keybinds
     if (evt.name === "pageup" && scroll) {
       scroll.scrollBy(-scroll.height / 2);
+      setTimeout(afterScroll, 60);
     }
     if (evt.name === "pagedown" && scroll) {
       scroll.scrollBy(scroll.height / 2);
+      setTimeout(afterScroll, 60);
     }
     // Home: jump to top
     if (evt.name === "home" && scroll) {
       tryLoadMore();
       scroll.scrollTo(0);
+      setTimeout(afterScroll, 60);
     }
-    // End: jump to bottom
+    // End: jump to bottom → always unfreeze
     if (evt.name === "end" && scroll) {
+      setFrozen(false);
       scroll.scrollTo(scroll.scrollHeight);
     }
   });
@@ -308,11 +371,11 @@ export function ChatPage() {
                 </text>
               </box>
             </Show>
-            <For each={messages()}>
+            <For each={visibleMessages()}>
               {(message, index) => {
                 const prevMsg = createMemo(() => {
                   const i = index();
-                  return i > 0 ? messages()[i - 1] : undefined;
+                  return i > 0 ? visibleMessages()[i - 1] : undefined;
                 });
                 // Collapse same-sender consecutive messages
                 const sameSender = createMemo(() => {
@@ -340,6 +403,7 @@ export function ChatPage() {
                     flexShrink={0}
                     alignSelf="flex-start"
                     maxWidth="85%"
+                    overflow="hidden"
                     border={["top", "left", "right", "bottom"]}
                     borderColor={sameSender() ? theme.borderSubtle : color()}
                     customBorderChars={MikuPanelBorder}
@@ -405,6 +469,27 @@ export function ChatPage() {
             </For>
           </scrollbox>
 
+          {/* New messages indicator when browsing history */}
+          <Show when={pendingCount() > 0}>
+            <box
+              flexShrink={0}
+              alignSelf="center"
+              paddingLeft={2}
+              paddingRight={2}
+              onMouseUp={() => {
+                setFrozen(false);
+                if (scroll) scroll.scrollTo(scroll.scrollHeight);
+              }}
+            >
+              <text fg={theme.warning}>
+                <b>
+                  ↓ {pendingCount()} new message{pendingCount() > 1 ? "s" : ""}{" "}
+                  — End to jump
+                </b>
+              </text>
+            </box>
+          </Show>
+
           {/* Bottom prompt area - exact OpenCode pattern */}
           <box flexShrink={0}>
             <ChatPrompt
@@ -465,6 +550,248 @@ export function ChatPage() {
   );
 }
 
+// === QQ Face ID → Unicode Emoji mapping ===
+const QQ_FACE_EMOJI: Record<string, string> = {
+  "0": "😲",
+  "1": "😖",
+  "2": "😍",
+  "3": "😶",
+  "4": "😎",
+  "5": "😭",
+  "6": "☺️",
+  "7": "🤐",
+  "8": "😴",
+  "9": "😢",
+  "10": "😤",
+  "11": "😊",
+  "12": "😜",
+  "13": "😁",
+  "14": "🙂",
+  "15": "😡",
+  "16": "🤗",
+  "17": "😓",
+  "18": "😳",
+  "19": "🤮",
+  "20": "😏",
+  "21": "😊",
+  "22": "😌",
+  "23": "😔",
+  "24": "😱",
+  "25": "😂",
+  "26": "😘",
+  "27": "😄",
+  "28": "😃",
+  "29": "😫",
+  "30": "😠",
+  "31": "🤬",
+  "32": "🤔",
+  "33": "🤫",
+  "34": "😵",
+  "35": "😰",
+  "36": "😩",
+  "37": "💀",
+  "38": "😤",
+  "39": "👋",
+  "46": "🐷",
+  "49": "🤗",
+  "53": "🎂",
+  "54": "⚡",
+  "55": "💣",
+  "56": "🔪",
+  "57": "⚽",
+  "59": "💩",
+  "60": "☕",
+  "61": "🍚",
+  "63": "🌹",
+  "64": "🥀",
+  "66": "❤️",
+  "67": "💔",
+  "69": "🎁",
+  "74": "☀️",
+  "75": "🌙",
+  "76": "👍",
+  "77": "👎",
+  "78": "🤝",
+  "79": "✌️",
+  "85": "🤦",
+  "86": "😒",
+  "89": "🍉",
+  "96": "😅",
+  "97": "😪",
+  "98": "😤",
+  "99": "😬",
+  "100": "😑",
+  "101": "😤",
+  "102": "😳",
+  "103": "😵‍💫",
+  "104": "🥱",
+  "106": "😡",
+  "107": "💪",
+  "108": "🍭",
+  "109": "🍼",
+  "110": "😞",
+  "111": "🧐",
+  "112": "😇",
+  "113": "⚡",
+  "114": "👊",
+  "115": "✋",
+  "116": "🙏",
+  "117": "🎉",
+  "118": "🤷",
+  "120": "👏",
+  "122": "😮",
+  "123": "🤡",
+  "124": "😬",
+  "125": "🤮",
+  "126": "🥺",
+  "127": "😈",
+  "128": "😬",
+  "129": "🤨",
+  "130": "😱",
+  "131": "🥰",
+  "132": "🤯",
+  "133": "😵",
+  "134": "🤥",
+  "136": "🙄",
+  "137": "😪",
+  "138": "🤑",
+  "140": "😷",
+  "144": "🙃",
+  "145": "🫡",
+  "146": "🤪",
+  "147": "🫠",
+  "148": "🥳",
+  "151": "🫣",
+  "168": "😎",
+  "169": "🤓",
+  "171": "🍵",
+  "172": "😺",
+  "173": "🐶",
+  "174": "🌸",
+  "175": "😊",
+  "176": "😖",
+  "177": "🤣",
+  "178": "😏",
+  "179": "🥲",
+  "180": "😋",
+  "181": "😃",
+  "182": "😅",
+  "183": "🤧",
+  "187": "🥵",
+  "188": "🥶",
+  "190": "🤗",
+  "192": "🌸",
+  "193": "🥺",
+  "194": "🧐",
+  "197": "😤",
+  "198": "🤡",
+  "199": "🙃",
+  "200": "🤠",
+  "201": "🫤",
+  "202": "🫢",
+  "203": "🫥",
+  "204": "🫨",
+  "205": "🫰",
+  "206": "🫶",
+  "207": "🤌",
+  "208": "🤏",
+  "210": "🤙",
+  "211": "🫵",
+  "212": "🤞",
+  "214": "🫰",
+  "215": "❤️‍🔥",
+  "216": "🩷",
+  "217": "🩵",
+  "218": "🤎",
+  "219": "🖤",
+  "220": "🤍",
+  "221": "💘",
+  "222": "💝",
+  "223": "💗",
+  "224": "🌹",
+  "225": "🔥",
+  "226": "🎉",
+  "227": "✨",
+  "228": "🌟",
+  "229": "💫",
+  "230": "🌈",
+  "231": "🎊",
+  "232": "💐",
+  "233": "🎈",
+  "234": "🪄",
+  "235": "🧧",
+  "236": "🎀",
+  "237": "🍰",
+  "238": "🧁",
+  "239": "🍬",
+  "240": "🍫",
+  "241": "🍩",
+  "242": "🍪",
+  "243": "🥤",
+  "244": "🧋",
+  "245": "🍺",
+  "246": "🍻",
+  "247": "🥂",
+  "260": "🌧️",
+  "261": "⛈️",
+  "262": "🌩️",
+  "263": "🌤️",
+  "264": "🌥️",
+  "265": "🌦️",
+  "266": "🌨️",
+  "267": "🌪️",
+  "268": "🌫️",
+  "269": "🌬️",
+  "270": "🌊",
+  "271": "🌋",
+  "272": "🏔️",
+  "273": "⛰️",
+  "277": "🐱",
+  "278": "🐻",
+  "279": "🐰",
+  "280": "🐸",
+  "281": "🐔",
+  "282": "🐧",
+  "283": "🦊",
+  "284": "🐼",
+  "285": "🐨",
+  "286": "🦁",
+  "287": "🐮",
+  "288": "🐵",
+  "289": "🐲",
+  "290": "🦄",
+  "293": "🍓",
+  "294": "🍑",
+  "295": "🍊",
+  "296": "🍋",
+  "297": "🍎",
+  "298": "🍇",
+  "299": "🥝",
+  "300": "🍒",
+  "301": "🥭",
+  "302": "🍍",
+  "303": "🥑",
+  "304": "🥦",
+  "305": "🌽",
+  "306": "🍄",
+  "311": "🫧",
+  "312": "💤",
+  "313": "💦",
+  "314": "🎵",
+  "315": "🎶",
+  "316": "❗",
+  "317": "❓",
+  "318": "⭕",
+  "319": "❌",
+  "320": "💯",
+  "321": "🆘",
+  "322": "⚠️",
+  "323": "🚫",
+  "324": "♻️",
+  "325": "📌",
+  "326": "🔔",
+};
+
 // === Segment Renderer ===
 
 function SegmentView(props: {
@@ -504,8 +831,14 @@ function SegmentView(props: {
           }
           case "reply":
             return <ReplyQuote id={d().id} nicknames={props.nicknames} />;
-          case "face":
-            return <text fg={theme.accent}>[emoji:{d().id}]</text>;
+          case "face": {
+            const emoji = QQ_FACE_EMOJI[String(d().id)];
+            return emoji ? (
+              <text>{emoji}</text>
+            ) : (
+              <text fg={theme.accent}>[emoji:{d().id}]</text>
+            );
+          }
           case "mface":
             return (
               <text>

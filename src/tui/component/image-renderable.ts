@@ -1,45 +1,95 @@
-// ImageRenderable - Kitty Graphics Protocol with viewport clipping + content-hash cache pool
+// ImageRenderable - Kitty Graphics Protocol with Unicode Placeholders
 //
-// Cache architecture:
-// 1. Download cache: src URL → raw bytes (in QQImage component, disk level)
-// 2. PNG pool: contentHash → { pngB64, pxW, pxH, cols, rows, kittyId, transmitted }
-//    - Keyed by content hash, not URL
-//    - Same image content from different URLs shares one pool entry
-//    - PNG conversion + base64 encoding done once per unique image
-//    - Kitty transmission done once per unique image (a=t stores in terminal memory)
-//    - Placement (a=p) is per-renderable (position-dependent)
-// 3. Frame dedup: _lastRect prevents redundant placement writes
+// Uses buffer.drawText() to write U+10EEEE + diacritics into the text buffer.
+// Unlike setCell (which only stores one codepoint and drops combining marks),
+// drawText passes the full string to native Zig code which correctly handles
+// grapheme clusters: base char + combining diacritics = one cell.
+//
+// The framework's scissor rect and buffer diff handle everything:
+//   - Clipping: scrollbox viewport + overflow:hidden ancestors
+//   - No ghosting: text buffer owns the cells, framework redraws on scroll
+//   - No timing issues: placeholders are in the buffer, renderNative outputs them
+//
+// Kitty sees U+10EEEE with the image ID encoded in the foreground color and
+// row/column diacritics, and renders the image at those cells automatically.
+// Images scroll with text — no manual coordinate tracking needed.
 
 import {
   Renderable,
   type RenderableOptions,
   OptimizedBuffer,
+  RGBA,
 } from "@opentui/core";
 
 let nextImageId = 100;
 
-// Async stdout writer — avoids blocking the event loop with large payloads
-// Uses process.stdout.write which is buffered and non-blocking
-function writeStdout(data: string) {
-  try {
-    process.stdout.write(data);
-  } catch {}
+const DIACRITICS = [
+  0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346,
+  0x034a, 0x034b, 0x034c, 0x0350, 0x0351, 0x0352, 0x0357, 0x035b, 0x0363,
+  0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369, 0x036a, 0x036b, 0x036c,
+  0x036d, 0x036e, 0x036f, 0x0483, 0x0484, 0x0485, 0x0486, 0x0487, 0x0592,
+  0x0593, 0x0594, 0x0595, 0x0597, 0x0598, 0x0599, 0x059c, 0x059d, 0x059e,
+  0x059f, 0x05a0, 0x05a1, 0x05a8, 0x05a9, 0x05ab, 0x05ac, 0x05af, 0x05c4,
+  0x0610, 0x0611, 0x0612, 0x0613, 0x0614, 0x0615, 0x0616, 0x0617, 0x0657,
+  0x0658, 0x0659, 0x065a, 0x065b, 0x065d, 0x065e, 0x06d6, 0x06d7, 0x06d8,
+  0x06d9, 0x06da, 0x06db, 0x06dc, 0x06df, 0x06e0, 0x06e1, 0x06e2, 0x06e4,
+  0x06e7, 0x06e8, 0x06eb, 0x06ec, 0x0730, 0x0732, 0x0733, 0x0735, 0x0736,
+  0x073a, 0x073d, 0x073f, 0x0740, 0x0741, 0x0743, 0x0745, 0x0747, 0x0749,
+  0x074a, 0x07eb, 0x07ec, 0x07ed, 0x07ee, 0x07ef, 0x07f0, 0x07f1, 0x07f3,
+  0x0816, 0x0817, 0x0818, 0x0819, 0x081b, 0x081c, 0x081d, 0x081e, 0x081f,
+  0x0820, 0x0821, 0x0822, 0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082a,
+  0x082b, 0x082c, 0x082d, 0x0951, 0x0953, 0x0954, 0x0f82, 0x0f83, 0x0f86,
+  0x0f87, 0x135d, 0x135e, 0x135f, 0x17dd, 0x193a, 0x1a17, 0x1a75, 0x1a76,
+  0x1a77, 0x1a78, 0x1a79, 0x1a7a, 0x1a7b, 0x1a7c, 0x1b6b, 0x1b6d, 0x1b6e,
+  0x1b6f, 0x1b70, 0x1b71, 0x1b72, 0x1b73, 0x1cd0, 0x1cd1, 0x1cd2, 0x1cda,
+  0x1cdb, 0x1ce0, 0x1dc0, 0x1dc1, 0x1dc3, 0x1dc4, 0x1dc5, 0x1dc6, 0x1dc7,
+  0x1dc8, 0x1dc9, 0x1dcb, 0x1dcc, 0x1dd1, 0x1dd2, 0x1dd3, 0x1dd4, 0x1dd5,
+  0x1dd6, 0x1dd7, 0x1dd8, 0x1dd9, 0x1dda, 0x1ddb, 0x1ddc, 0x1ddd, 0x1dde,
+  0x1ddf, 0x1de0, 0x1de1, 0x1de2, 0x1de3, 0x1de4, 0x1de5, 0x1de6, 0x1dfe,
+  0x20d0, 0x20d1, 0x20d4, 0x20d5, 0x20d6, 0x20d7, 0x20db, 0x20dc, 0x20e1,
+  0x20e7, 0x20e9, 0x20f0, 0x2cef, 0x2cf0, 0x2cf1, 0x2de0, 0x2de1, 0x2de2,
+  0x2de3, 0x2de4, 0x2de5, 0x2de6, 0x2de7, 0x2de8, 0x2de9, 0x2dea, 0x2deb,
+  0x2dec, 0x2ded, 0x2dee, 0x2def, 0x2df0, 0x2df1, 0x2df2, 0x2df3, 0x2df4,
+  0x2df5, 0x2df6, 0x2df7, 0x2df8, 0x2df9, 0x2dfa, 0x2dfb, 0x2dfc, 0x2dfd,
+  0x2dfe, 0x2dff, 0xa66f, 0xa67c, 0xa67d, 0xa6f0, 0xa6f1, 0xa8e0, 0xa8e1,
+  0xa8e2, 0xa8e3, 0xa8e4, 0xa8e5,
+];
+
+const PLACEHOLDER = String.fromCodePoint(0x10eeee);
+
+function diacritic(n: number): string {
+  if (n < 0 || n >= DIACRITICS.length) return "";
+  return String.fromCodePoint(DIACRITICS[n]);
 }
 
-// === Content-hash PNG pool ===
+function writeStdout(data: string) {
+  try {
+    const fs = require("fs") as typeof import("fs");
+    fs.writeSync(1, data);
+  } catch {
+    try {
+      process.stdout.write(data);
+    } catch {}
+  }
+}
+// writeSync is an alias kept for the remaining callers
+function writeSync(data: string) {
+  writeStdout(data);
+}
+
+// === Pool ===
 interface PoolEntry {
   pngB64: string;
-  pxW: number;
-  pxH: number;
   cols: number;
   rows: number;
   kittyId: number;
   transmitted: boolean;
+  virtual: boolean;
   refCount: number;
 }
 
 const pool = new Map<string, PoolEntry>();
-const pendingConversions = new Map<string, Promise<PoolEntry | null>>();
+const pending = new Map<string, Promise<PoolEntry | null>>();
 
 function contentHash(buf: Buffer): string {
   return Bun.hash(buf).toString(16);
@@ -51,57 +101,48 @@ async function acquireFromPool(
   maxRows: number,
 ): Promise<PoolEntry | null> {
   const hash = contentHash(rawBytes) + `|${maxCols}x${maxRows}`;
-
   const existing = pool.get(hash);
   if (existing) {
     existing.refCount++;
     return existing;
   }
-
-  const pending = pendingConversions.get(hash);
-  if (pending) {
-    const result = await pending;
-    if (result) result.refCount++;
-    return result;
+  const running = pending.get(hash);
+  if (running) {
+    const r = await running;
+    if (r) r.refCount++;
+    return r;
   }
 
   const promise = (async (): Promise<PoolEntry | null> => {
     try {
       const sharp = require("sharp");
-      const maxPxW = maxCols * 8;
-      const maxPxH = maxRows * 16;
-
       const { data, info } = await sharp(rawBytes)
         .resize({
-          width: maxPxW,
-          height: maxPxH,
+          width: maxCols * 8,
+          height: maxRows * 16,
           fit: "inside",
           withoutEnlargement: true,
         })
         .png()
         .toBuffer({ resolveWithObject: true });
-
       const entry: PoolEntry = {
         pngB64: data.toString("base64"),
-        pxW: info.width,
-        pxH: info.height,
         cols: Math.ceil(info.width / 8),
         rows: Math.ceil(info.height / 16),
         kittyId: ++nextImageId,
         transmitted: false,
+        virtual: false,
         refCount: 1,
       };
-
       pool.set(hash, entry);
       return entry;
     } catch {
       return null;
     } finally {
-      pendingConversions.delete(hash);
+      pending.delete(hash);
     }
   })();
-
-  pendingConversions.set(hash, promise);
+  pending.set(hash, promise);
   return promise;
 }
 
@@ -110,39 +151,40 @@ function releaseFromPool(hash: string) {
   if (!entry) return;
   entry.refCount--;
   if (entry.refCount <= 0) {
-    // Evict from pool + delete from terminal memory
-    if (entry.transmitted) {
-      writeStdout(`\x1b_Ga=d,d=I,i=${entry.kittyId},q=2\x1b\\`);
-    }
+    if (entry.transmitted)
+      writeSync(`\x1b_Ga=d,d=I,i=${entry.kittyId},q=2\x1b\\`);
     pool.delete(hash);
   }
 }
 
-function transmitEntry(entry: PoolEntry) {
+function ensureTransmitted(entry: PoolEntry) {
   if (entry.transmitted) return;
-
   const b64 = entry.pngB64;
   const id = entry.kittyId;
   const out: string[] = [];
-
   if (b64.length <= 4096) {
     out.push(`\x1b_Ga=t,f=100,i=${id},q=2;${b64}\x1b\\`);
   } else {
-    const chunkSize = 4096;
-    for (let i = 0; i < b64.length; i += chunkSize) {
-      const chunk = b64.slice(i, i + chunkSize);
-      const last = i + chunkSize >= b64.length;
-      const m = last ? 0 : 1;
-      if (i === 0) {
-        out.push(`\x1b_Ga=t,f=100,i=${id},m=${m},q=2;${chunk}\x1b\\`);
-      } else {
-        out.push(`\x1b_Gm=${m},q=2;${chunk}\x1b\\`);
-      }
+    for (let i = 0; i < b64.length; i += 4096) {
+      const chunk = b64.slice(i, i + 4096);
+      const m = i + 4096 >= b64.length ? 0 : 1;
+      out.push(
+        i === 0
+          ? `\x1b_Ga=t,f=100,i=${id},m=${m},q=2;${chunk}\x1b\\`
+          : `\x1b_Gm=${m},q=2;${chunk}\x1b\\`,
+      );
     }
   }
-
   writeStdout(out.join(""));
   entry.transmitted = true;
+}
+
+function ensureVirtual(entry: PoolEntry) {
+  if (entry.virtual) return;
+  writeSync(
+    `\x1b_Ga=p,U=1,i=${entry.kittyId},c=${entry.cols},r=${entry.rows},q=2\x1b\\`,
+  );
+  entry.virtual = true;
 }
 
 // === ImageRenderable ===
@@ -154,15 +196,6 @@ export interface ImageRenderableOptions
   maxRows?: number;
 }
 
-interface VisibleRect {
-  screenX: number;
-  screenY: number;
-  srcX: number;
-  srcY: number;
-  cols: number;
-  rows: number;
-}
-
 export class ImageRenderable extends Renderable {
   private _src?: string;
   private _maxCols: number;
@@ -170,8 +203,7 @@ export class ImageRenderable extends Renderable {
   private _poolHash = "";
   private _entry: PoolEntry | null = null;
   private _loaded = false;
-  private _placed = false;
-  private _lastRect = "";
+  private _fg: RGBA | null = null;
 
   constructor(ctx: any, options: ImageRenderableOptions) {
     super(ctx, {
@@ -182,7 +214,6 @@ export class ImageRenderable extends Renderable {
     this._src = options.src;
     this._maxCols = options.maxCols ?? 40;
     this._maxRows = options.maxRows ?? 10;
-
     if (options.src) this.loadImage(options.src);
   }
 
@@ -197,7 +228,6 @@ export class ImageRenderable extends Renderable {
     if (value === this._maxCols) return;
     const old = this._maxCols;
     this._maxCols = value;
-    // Only reload if change is significant (>10%) to avoid constant re-conversion
     if (this._src && Math.abs(value - old) > old * 0.1) {
       this.cleanup();
       this.loadImage(this._src);
@@ -224,13 +254,26 @@ export class ImageRenderable extends Renderable {
       } else {
         buf = Buffer.from(await Bun.file(src).arrayBuffer());
       }
-
       this._poolHash = contentHash(buf) + `|${this._maxCols}x${this._maxRows}`;
       const entry = await acquireFromPool(buf, this._maxCols, this._maxRows);
       if (!entry) return;
-
       this._entry = entry;
+
+      // Transmit image data + create virtual placement immediately on load,
+      // NOT in renderSelf where stdout writes would interleave with renderNative.
+      ensureTransmitted(entry);
+      ensureVirtual(entry);
+
       this._loaded = true;
+
+      // Encode image ID as 24-bit truecolor foreground
+      const id = entry.kittyId;
+      this._fg = RGBA.fromInts(
+        (id >> 16) & 0xff,
+        (id >> 8) & 0xff,
+        id & 0xff,
+        255,
+      );
 
       const node = this.getLayoutNode();
       node.setWidth(entry.cols);
@@ -238,99 +281,39 @@ export class ImageRenderable extends Renderable {
     } catch {}
   }
 
-  private deletePlacement() {
-    if (this._placed && this._entry) {
-      writeStdout(`\x1b_Ga=d,d=i,i=${this._entry.kittyId},q=2\x1b\\\n`);
-      this._placed = false;
-      this._lastRect = "";
+  // Write Unicode placeholder characters into the text buffer using drawText.
+  // drawText passes the full string (including combining diacritics) to the
+  // native Zig renderer which correctly handles grapheme clusters.
+  // The framework's scissor rect clips to scrollbox + overflow:hidden ancestors.
+  // No manual coordinate tracking, no setTimeout, no ghosting.
+  protected renderSelf(buffer: OptimizedBuffer): void {
+    if (!this._loaded || !this._entry || !this._fg) return;
+
+    const entry = this._entry;
+    const fg = this._fg;
+    for (let row = 0; row < entry.rows; row++) {
+      // Build the row string: first cell has row diacritic, rest are bare.
+      // Each placeholder is one cell wide. Kitty inherits column from left.
+      let line = "";
+      for (let col = 0; col < entry.cols; col++) {
+        line += col === 0 ? PLACEHOLDER + diacritic(row) : PLACEHOLDER;
+      }
+      // Pass null bg so native layer inherits parent background.
+      // RGBA with alpha=0 causes the renderer to skip these cells.
+      (buffer as any).drawText(line, 0, row, fg, null);
     }
   }
-
-  private getViewport(): { top: number; bottom: number } {
-    let top = 0;
-    let bottom = 9999;
-    let node: Renderable | null = this.parent as Renderable | null;
-    while (node) {
-      top = Math.max(top, node.y);
-      bottom = Math.min(bottom, node.y + node.height);
-      node = node.parent as Renderable | null;
-    }
-    return { top, bottom };
-  }
-
-  private computeVisibleRect(): VisibleRect | null {
-    if (!this._entry) return null;
-    const absX = this.x;
-    const absY = this.y;
-    const rows = this._entry.rows;
-    const cols = this._entry.cols;
-    const { top, bottom } = this.getViewport();
-
-    if (absY + rows <= top || absY >= bottom) return null;
-
-    const clippedTop = Math.max(0, top - absY);
-    const clippedBottom = Math.max(0, absY + rows - bottom);
-    const visibleRows = rows - clippedTop - clippedBottom;
-
-    if (visibleRows <= 0) return null;
-
-    return {
-      screenX: absX,
-      screenY: absY + clippedTop,
-      srcX: 0,
-      srcY: clippedTop * 16,
-      cols,
-      rows: visibleRows,
-    };
-  }
-
-  private placeImage(rect: VisibleRect) {
-    if (!this._entry) return;
-    const id = this._entry.kittyId;
-    const srcW = rect.cols * 8;
-    const srcH = rect.rows * 16;
-
-    const seq =
-      `\x1b[${rect.screenY + 1};${rect.screenX + 1}H` +
-      `\x1b_Ga=p,i=${id},x=${rect.srcX},y=${rect.srcY},w=${srcW},h=${srcH},c=${rect.cols},r=${rect.rows},C=1,q=2\x1b\\`;
-
-    writeStdout(seq);
-    this._placed = true;
-  }
-
-  protected renderSelf(_buffer: OptimizedBuffer): void {}
 
   render(buffer: OptimizedBuffer, deltaTime: number): void {
     super.render(buffer, deltaTime);
-    if (!this._loaded || !this._entry) return;
-
-    // Transmit to terminal memory once (shared across all renderables with same content)
-    transmitEntry(this._entry);
-
-    const rect = this.computeVisibleRect();
-    const rectKey = rect
-      ? `${rect.screenX},${rect.screenY},${rect.rows},${rect.srcY}`
-      : "hidden";
-
-    if (rectKey === this._lastRect) return;
-
-    this.deletePlacement();
-    if (rect) this.placeImage(rect);
-    this._lastRect = rectKey;
-  }
-
-  protected onResize(): void {
-    this.deletePlacement();
-    this._lastRect = "";
   }
 
   private cleanup() {
-    this.deletePlacement();
     if (this._poolHash) releaseFromPool(this._poolHash);
     this._entry = null;
     this._loaded = false;
     this._poolHash = "";
-    this._lastRect = "";
+    this._fg = null;
   }
 
   protected destroySelf(): void {

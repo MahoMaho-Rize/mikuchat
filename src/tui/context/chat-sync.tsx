@@ -13,6 +13,10 @@ import {
   markRead,
   pinSession,
   searchSessions,
+  precompute,
+  append as layoutAppend,
+  rescale,
+  getLayout,
 } from "../../qq";
 import { segmentsToPreview } from "../../qq/bridge";
 import type { QCSession, QCMessage, OB11Message } from "../../qq";
@@ -48,10 +52,15 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
         }
       }
 
+      // Terminal width for layout computation — updated by ChatPage
+      let termWidth = 80;
+
       function loadMessages(sessionId: string) {
         try {
           const msgs = getMessages(sessionId, { limit: 200 });
           setStore("messages", sessionId, reconcile(msgs));
+          // Precompute layout for loaded messages
+          precompute(sessionId, msgs, termWidth);
         } catch (e) {
           console.error("Failed to load messages:", e);
         }
@@ -124,23 +133,29 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
 
           // --- Append message to loaded session (no DB read) ---
           if (store.messages[sessionId]) {
+            const newMsg: QCMessage = {
+              id: 0,
+              session_id: sessionId,
+              message_id: msg.message_id,
+              user_id: msg.user_id,
+              nickname: msg.sender.nickname,
+              card: msg.sender.card,
+              role: msg.sender.role,
+              segments: msg.message,
+              raw_message: msg.raw_message,
+              time: msg.time,
+            };
+            // Incremental layout update
+            const msgs = store.messages[sessionId];
+            const prev = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+            layoutAppend(sessionId, newMsg, prev, termWidth);
+
             setStore(
               "messages",
               sessionId,
               produce((draft: QCMessage[]) => {
                 if (draft.some((m) => m.message_id === msg.message_id)) return;
-                draft.push({
-                  id: 0,
-                  session_id: sessionId,
-                  message_id: msg.message_id,
-                  user_id: msg.user_id,
-                  nickname: msg.sender.nickname,
-                  card: msg.sender.card,
-                  role: msg.sender.role,
-                  segments: msg.message,
-                  raw_message: msg.raw_message,
-                  time: msg.time,
-                });
+                draft.push(newMsg);
               }),
             );
           }
@@ -208,6 +223,20 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
           loadSessions();
         },
 
+        // Update terminal width for layout computation
+        setTermWidth(w: number) {
+          termWidth = w;
+        },
+
+        // Rescale layout for a session after terminal resize
+        rescaleLayout(sessionId: string, w: number) {
+          termWidth = w;
+          rescale(sessionId, w);
+        },
+
+        // Get precomputed layout for a session
+        getLayout,
+
         isLoading(sessionId: string): boolean {
           return store.loading[sessionId] ?? false;
         },
@@ -237,6 +266,8 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
                 draft.unshift(...fresh);
               }),
             );
+            // Recompute full layout after prepending history
+            precompute(sessionId, store.messages[sessionId] ?? [], termWidth);
             setStore("loading", sessionId, false);
             return true;
           } catch {
