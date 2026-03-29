@@ -1,20 +1,20 @@
 // Chat sidebar - session list with unread badges
 // Borrowed pattern from OpenCode's session/sidebar.tsx
-import { createMemo, For, Show } from "solid-js"
-import { useTheme } from "@tui/context/theme"
-import { useChatSync } from "@tui/context/chat-sync"
-import { useRoute } from "@tui/context/route"
-import { RGBA } from "@opentui/core"
+import { createMemo, For, Show } from "solid-js";
+import { useTheme } from "@tui/context/theme";
+import { useChatSync } from "@tui/context/chat-sync";
+import { useRoute } from "@tui/context/route";
+import { RGBA } from "@opentui/core";
 
 export function ChatSidebar() {
-  const { theme } = useTheme()
-  const sync = useChatSync()
-  const route = useRoute()
+  const { theme } = useTheme();
+  const sync = useChatSync();
+  const route = useRoute();
 
-  const sessions = createMemo(() => sync.sessions)
+  const sessions = createMemo(() => sync.sessions);
   const activeId = createMemo(() =>
     route.data.type === "chat" ? route.data.sessionId : null,
-  )
+  );
 
   return (
     <box
@@ -25,7 +25,7 @@ export function ChatSidebar() {
       paddingBottom={1}
       paddingLeft={1}
       paddingRight={1}
-      borderRight={[true]}
+      border={["right"]}
       borderColor={theme.border}
     >
       {/* Header */}
@@ -37,17 +37,20 @@ export function ChatSidebar() {
 
       {/* Session list */}
       <scrollbox flexGrow={1}>
-        <For each={sessions()} fallback={
-          <box paddingLeft={1}>
-            <text fg={theme.textMuted}>No conversations yet</text>
-          </box>
-        }>
+        <For
+          each={sessions()}
+          fallback={
+            <box paddingLeft={1}>
+              <text fg={theme.textMuted}>No conversations yet</text>
+            </box>
+          }
+        >
           {(session) => {
-            const isActive = createMemo(() => activeId() === session.id)
-            const hasUnread = createMemo(() => session.unread_count > 0)
+            const isActive = createMemo(() => activeId() === session.id);
+            const hasUnread = createMemo(() => session.unread_count > 0);
             const icon = createMemo(() =>
               session.type === "group" ? "G" : "P",
-            )
+            );
 
             return (
               <box
@@ -57,19 +60,29 @@ export function ChatSidebar() {
                   isActive() ? theme.backgroundElement : undefined
                 }
                 onMouseUp={() => {
-                  route.navigate({ type: "chat", sessionId: session.id })
-                  sync.setActiveSession(session.id)
+                  route.navigate({ type: "chat", sessionId: session.id });
+                  sync.setActiveSession(session.id);
                 }}
               >
                 <box flexDirection="row" gap={1}>
                   {/* Type icon */}
-                  <text fg={session.type === "group" ? theme.accent : theme.primary}>
+                  <text
+                    fg={session.type === "group" ? theme.accent : theme.primary}
+                  >
                     {icon()}
                   </text>
                   {/* Name + unread */}
                   <box flexGrow={1} minWidth={0}>
                     <box flexDirection="row">
-                      <text fg={isActive() ? theme.text : hasUnread() ? theme.text : theme.textMuted}>
+                      <text
+                        fg={
+                          isActive()
+                            ? theme.text
+                            : hasUnread()
+                              ? theme.text
+                              : theme.textMuted
+                        }
+                      >
                         {session.name.length > 18
                           ? session.name.slice(0, 17) + "…"
                           : session.name}
@@ -77,7 +90,10 @@ export function ChatSidebar() {
                       <box flexGrow={1} />
                       <Show when={hasUnread()}>
                         <text fg={theme.error}>
-                          {" "}{session.unread_count > 99 ? "99+" : session.unread_count}
+                          {" "}
+                          {session.unread_count > 99
+                            ? "99+"
+                            : session.unread_count}
                         </text>
                       </Show>
                     </box>
@@ -92,17 +108,15 @@ export function ChatSidebar() {
                   </box>
                 </box>
               </box>
-            )
+            );
           }}
         </For>
       </scrollbox>
 
       {/* Footer - QQ status */}
       <box flexShrink={0} paddingTop={1} paddingLeft={1}>
-        <text fg={theme.textMuted}>
-          {sessions().length} conversations
-        </text>
+        <text fg={theme.textMuted}>{sessions().length} conversations</text>
       </box>
     </box>
-  )
+  );
 }

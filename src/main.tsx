@@ -10,7 +10,9 @@ import { Switch, Match, ErrorBoundary, Show } from "solid-js";
 import { RouteProvider, useRoute } from "./tui/context/route";
 import { ThemeProvider, useTheme } from "./tui/context/theme";
 import { KVProvider } from "./tui/context/kv";
-import { ToastProvider } from "./tui/ui/toast";
+import { ToastProvider, useToast } from "./tui/ui/toast";
+import { Selection } from "./tui/util/selection";
+import { Clipboard } from "./tui/util/clipboard";
 import { ExitProvider, useExit } from "./tui/context/exit";
 import { KeybindProvider } from "./tui/context/keybind";
 import { DialogProvider, useDialog } from "./tui/ui/dialog";
@@ -23,7 +25,24 @@ import { SessionSearchDialog } from "./pages/search";
 
 export async function main() {
   return new Promise<void>(async (resolve) => {
-    const onExit = async () => resolve();
+    let exiting = false;
+    const onExit = async () => {
+      if (exiting) return;
+      exiting = true;
+      resolve();
+    };
+
+    // Fallback SIGINT handler — always works even if event loop is blocked
+    let sigintCount = 0;
+    const sigintHandler = () => {
+      sigintCount++;
+      if (sigintCount >= 2) {
+        // Force exit on double Ctrl+C
+        process.exit(1);
+      }
+      onExit();
+    };
+    process.on("SIGINT", sigintHandler);
 
     render(
       () => (
@@ -100,6 +119,7 @@ function App() {
   const exit = useExit();
   const dialog = useDialog();
   const renderer = useRenderer();
+  const toast = useToast();
   const dims = useTerminalDimensions();
   renderer.disableStdoutInterception();
 
@@ -112,8 +132,40 @@ function App() {
 
   // Global keybinds
   useKeyboard((evt) => {
+    // Ctrl+Shift+C: copy selection to clipboard
+    if (evt.ctrl && evt.shift && evt.name === "c") {
+      const sel = renderer.getSelection()?.getSelectedText();
+      if (sel) {
+        Clipboard.copy(sel)
+          .then(() =>
+            toast.show({ message: "Copied to clipboard", variant: "info" }),
+          )
+          .catch(() => {});
+        renderer.clearSelection();
+      }
+      evt.preventDefault();
+      evt.stopPropagation();
+      return;
+    }
+    // Ctrl+Shift+V: paste from clipboard into focused textarea
+    if (evt.ctrl && evt.shift && evt.name === "v") {
+      Clipboard.read()
+        .then((content) => {
+          if (!content || content.mime !== "text/plain") return;
+          const focused = renderer.currentFocusedRenderable;
+          if (focused && "insertText" in focused) {
+            (focused as any).insertText(content.data);
+          }
+        })
+        .catch(() => {});
+      evt.preventDefault();
+      evt.stopPropagation();
+      return;
+    }
+    // Ctrl+C: exit
     if (evt.ctrl && evt.name === "c") {
       exit();
+      return;
     }
     // Ctrl+K: open session search from anywhere
     if (evt.ctrl && evt.name === "k") {
@@ -165,3 +217,4 @@ function ErrorView(props: {
 }
 
 await main();
+process.exit(0);

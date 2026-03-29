@@ -26,10 +26,11 @@ import {
 } from "@tui/component/border";
 import { Toast, useToast } from "@tui/ui/toast";
 import { Locale } from "@/util/locale";
-import type { QCMessage, OB11Segment } from "../../../qq";
+import type { QCMessage, OB11Segment, OB11Message } from "../../../qq";
 import { QQImage } from "@tui/component/qq-image";
 import { MikuBackground } from "@tui/component/miku-background";
-import { Clipboard } from "@tui/util/clipboard";
+import fs from "fs";
+import path from "path";
 
 // Stable user colors - rotate through theme colors per user_id
 const USER_COLORS_KEYS = [
@@ -102,54 +103,6 @@ export function ChatPage() {
     }, 50);
   }
 
-  // Extract text content from a message for clipboard
-  function messageText(msg: QCMessage): string {
-    return msg.segments
-      .map((seg: any) => {
-        switch (seg.type) {
-          case "text":
-            return seg.data.text;
-          case "at":
-            return `@${seg.data.name || seg.data.qq}`;
-          case "face":
-            return `[emoji:${seg.data.id}]`;
-          case "mface":
-            return `[${seg.data.summary || "sticker"}]`;
-          case "image":
-            return "[图片]";
-          case "record":
-            return "[语音]";
-          case "video":
-            return "[视频]";
-          case "file":
-            return `[文件:${seg.data.name || seg.data.file}]`;
-          case "forward":
-            return "[合并转发]";
-          case "json":
-            return "[卡片消息]";
-          case "markdown":
-            return seg.data.content || "";
-          default:
-            return `[${seg.type}]`;
-        }
-      })
-      .join("");
-  }
-
-  // Copy last message text
-  function copyLastMessage() {
-    const msgs = messages();
-    if (msgs.length === 0) return;
-    const last = msgs[msgs.length - 1];
-    const text = messageText(last);
-    if (!text) return;
-    Clipboard.copy(text)
-      .then(() =>
-        toast.show({ variant: "info", message: "Copied last message" }),
-      )
-      .catch(() => toast.show({ variant: "error", message: "Copy failed" }));
-  }
-
   // Scroll to bottom on new messages
   createEffect(
     on(
@@ -167,11 +120,6 @@ export function ChatPage() {
     // Toggle sidebar
     if (evt.ctrl && evt.name === "b") {
       setSidebarVisible((v) => !v);
-    }
-    // Ctrl+Y: copy last message
-    if (evt.ctrl && evt.name === "y") {
-      copyLastMessage();
-      evt.preventDefault();
     }
     // PageUp at top: load more history
     if (evt.name === "pageup") {
@@ -201,6 +149,29 @@ export function ChatPage() {
     return (theme as any)[USER_COLORS_KEYS[idx]];
   }
 
+  // Resolve file path: supports ~ expansion and relative paths
+  function resolveFile(p: string): string | null {
+    const expanded = p.startsWith("~")
+      ? path.join(process.env.HOME || "/tmp", p.slice(1))
+      : path.resolve(p);
+    try {
+      if (fs.existsSync(expanded)) return expanded;
+    } catch {}
+    return null;
+  }
+
+  // Check if text is an image send command: /img <path> or just a file path ending with image ext
+  function parseImage(text: string): string | null {
+    // /img /path/to/file.png
+    const match = text.match(/^\/img\s+(.+)$/);
+    if (match) return resolveFile(match[1].trim());
+    // bare file path with image extension
+    if (/\.(jpe?g|png|gif|webp|bmp)$/i.test(text.trim())) {
+      return resolveFile(text.trim());
+    }
+    return null;
+  }
+
   async function sendMessage(text: string) {
     if (text === "/back" || text === "/home") {
       nav.navigate({ type: "home" });
@@ -210,6 +181,29 @@ export function ChatPage() {
     const parts = sessionId.split("_");
     const type = parts[0] as "group" | "private";
     const targetId = Number(parts.slice(1).join("_"));
+
+    // Check if sending an image
+    const img = parseImage(text);
+    if (img) {
+      try {
+        // OneBot 11: file:// URI for local files
+        const uri = `file://${img}`;
+        await qq.client.sendMsg(type, targetId, [
+          { type: "image", data: { file: uri } },
+        ]);
+        toast.show({
+          variant: "success",
+          message: `Image sent: ${path.basename(img)}`,
+        });
+      } catch (e: any) {
+        toast.show({
+          variant: "error",
+          message: `Image send failed: ${e?.message || "unknown error"}`,
+        });
+      }
+      return;
+    }
+
     try {
       await qq.client.sendMsg(type, targetId, [
         { type: "text", data: { text } },
@@ -435,9 +429,9 @@ export function ChatPage() {
               hint={<text fg={theme.textMuted}>{sessionName()}</text>}
               shortcuts={[
                 { key: "esc", label: "back" },
-                { key: "ctrl+y", label: "copy" },
+                { key: "/img", label: "send image" },
+                { key: "C-S-c", label: "copy" },
                 { key: "ctrl+b", label: "sidebar" },
-                { key: "pgup", label: "history" },
               ]}
             />
           </box>
@@ -480,26 +474,24 @@ function SegmentView(props: {
 }) {
   const { theme } = useTheme();
   const seg = () => props.segment;
+  // data accessor - the catch-all in OB11Segment prevents TS narrowing
+  const d = () => seg().data as any;
 
   return (
     <box flexShrink={0}>
       {(() => {
         switch (seg().type) {
           case "text":
-            return <text fg={theme.text}>{seg().data.text}</text>;
+            return <text fg={theme.text}>{d().text}</text>;
           case "image":
             return (
-              <QQImage
-                url={seg().data.url}
-                file={seg().data.file}
-                summary={seg().data.summary}
-              />
+              <QQImage url={d().url} file={d().file} summary={d().summary} />
             );
           case "at": {
             // Resolve: prefer data.name > nickname map > fallback qq number
-            const qq = String(seg().data.qq);
+            const qq = String(d().qq);
             const display =
-              seg().data.name ||
+              d().name ||
               props.nicknames.get(qq) ||
               (qq === "all" ? "全体成员" : qq);
             return (
@@ -511,21 +503,14 @@ function SegmentView(props: {
             );
           }
           case "reply":
-            return (
-              <box marginBottom={0} flexShrink={0}>
-                <text fg={theme.textMuted}>
-                  ↩{" "}
-                  <span style={{ fg: theme.textMuted }}>Reply to message</span>
-                </text>
-              </box>
-            );
+            return <ReplyQuote id={d().id} nicknames={props.nicknames} />;
           case "face":
-            return <text fg={theme.accent}>[emoji:{seg().data.id}]</text>;
+            return <text fg={theme.accent}>[emoji:{d().id}]</text>;
           case "mface":
             return (
               <text>
                 <span style={{ fg: theme.accent }}>
-                  [{seg().data.summary || "sticker"}]
+                  [{d().summary || "sticker"}]
                 </span>
               </text>
             );
@@ -570,7 +555,7 @@ function SegmentView(props: {
                   style={{ bg: theme.backgroundElement, fg: theme.textMuted }}
                 >
                   {" "}
-                  {seg().data.name || seg().data.file}{" "}
+                  {d().name || d().file}{" "}
                 </span>
               </text>
             );
@@ -609,7 +594,7 @@ function SegmentView(props: {
               <box paddingTop={0} flexShrink={0}>
                 <code
                   filetype="markdown"
-                  content={seg().data.content || ""}
+                  content={d().content || ""}
                   fg={theme.text}
                   syntaxStyle={props.syntax}
                 />
@@ -619,6 +604,96 @@ function SegmentView(props: {
             return <text fg={theme.textMuted}>[{seg().type}]</text>;
         }
       })()}
+    </box>
+  );
+}
+
+// === Reply Quote — fetches original message to show sender + preview ===
+
+// Global cache so we don't re-fetch the same message across re-renders (capped at 500 entries)
+const replyCache = new Map<string, { name: string; preview: string } | null>();
+const REPLY_CACHE_MAX = 500;
+function replyCacheSet(
+  key: string,
+  value: { name: string; preview: string } | null,
+) {
+  if (replyCache.size >= REPLY_CACHE_MAX) {
+    // Evict oldest entry (first inserted)
+    const first = replyCache.keys().next().value;
+    if (first !== undefined) replyCache.delete(first);
+  }
+  replyCache.set(key, value);
+}
+
+function ReplyQuote(props: { id: string; nicknames: Map<string, string> }) {
+  const { theme } = useTheme();
+  const qq = useQQ();
+  const [info, setInfo] = createSignal<{
+    name: string;
+    preview: string;
+  } | null>(null);
+  const [loading, setLoading] = createSignal(true);
+
+  onMount(async () => {
+    const cached = replyCache.get(props.id);
+    if (cached !== undefined) {
+      setInfo(cached);
+      setLoading(false);
+      return;
+    }
+    try {
+      const msg = await qq.client.getMsg(Number(props.id));
+      const sender = msg.sender;
+      const name = sender.card || sender.nickname || String(sender.user_id);
+      const segments: OB11Segment[] = msg.message ?? [];
+      const preview = segments
+        .map((s) => {
+          switch (s.type) {
+            case "text":
+              return s.data.text;
+            case "image":
+              return "[图片]";
+            case "face":
+              return "[表情]";
+            case "at":
+              return `@${s.data.name || s.data.qq}`;
+            case "mface":
+              return `[${s.data.summary || "表情"}]`;
+            default:
+              return `[${s.type}]`;
+          }
+        })
+        .join("")
+        .slice(0, 40);
+      const result = { name, preview };
+      replyCacheSet(props.id, result);
+      setInfo(result);
+    } catch {
+      replyCacheSet(props.id, null);
+    }
+    setLoading(false);
+  });
+
+  return (
+    <box marginBottom={0} flexShrink={0}>
+      <Show
+        when={info()}
+        fallback={
+          <text fg={theme.textMuted}>
+            ↩ {loading() ? "loading..." : "Reply to message"}
+          </text>
+        }
+      >
+        {(resolved) => (
+          <text fg={theme.textMuted}>
+            ↩{" "}
+            <span style={{ fg: theme.accent, bold: true }}>
+              {resolved().name}
+            </span>
+            <span style={{ fg: theme.textMuted }}>: {resolved().preview}</span>
+          </text>
+        )}
+      </Show>
     </box>
   );
 }

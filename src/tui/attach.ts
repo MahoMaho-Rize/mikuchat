@@ -1,10 +1,10 @@
-import { cmd } from "../cmd"
-import { UI } from "@/cli/ui"
-import { tui } from "./app"
-import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32"
-import { TuiConfig } from "@/config/tui"
-import { Instance } from "@/project/instance"
-import { existsSync } from "fs"
+import { cmd } from "@/cli/cmd/cmd";
+import { UI } from "@/cli/ui";
+import { tui } from "./app";
+import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32";
+import { TuiConfig } from "@/config/tui";
+import { Instance } from "@/project/instance";
+import { existsSync } from "fs";
 
 export const AttachCommand = cmd({
   command: "attach <url>",
@@ -32,7 +32,8 @@ export const AttachCommand = cmd({
       })
       .option("fork", {
         type: "boolean",
-        describe: "fork the session when continuing (use with --continue or --session)",
+        describe:
+          "fork the session when continuing (use with --continue or --session)",
       })
       .option("password", {
         alias: ["p"],
@@ -40,36 +41,37 @@ export const AttachCommand = cmd({
         describe: "basic auth password (defaults to OPENCODE_SERVER_PASSWORD)",
       }),
   handler: async (args) => {
-    const unguard = win32InstallCtrlCGuard()
+    const unguard = win32InstallCtrlCGuard();
     try {
-      win32DisableProcessedInput()
+      win32DisableProcessedInput();
 
       if (args.fork && !args.continue && !args.session) {
-        UI.error("--fork requires --continue or --session")
-        process.exitCode = 1
-        return
+        UI.error("--fork requires --continue or --session");
+        process.exitCode = 1;
+        return;
       }
 
       const directory = (() => {
-        if (!args.dir) return undefined
+        if (!args.dir) return undefined;
         try {
-          process.chdir(args.dir)
-          return process.cwd()
+          process.chdir(args.dir);
+          return process.cwd();
         } catch {
           // If the directory doesn't exist locally (remote attach), pass it through.
-          return args.dir
+          return args.dir;
         }
-      })()
+      })();
       const headers = (() => {
-        const password = args.password ?? process.env.OPENCODE_SERVER_PASSWORD
-        if (!password) return undefined
-        const auth = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`
-        return { Authorization: auth }
-      })()
+        const password = args.password ?? process.env.OPENCODE_SERVER_PASSWORD;
+        if (!password) return undefined;
+        const auth = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+        return { Authorization: auth };
+      })();
       const config = await Instance.provide({
-        directory: directory && existsSync(directory) ? directory : process.cwd(),
+        directory:
+          directory && existsSync(directory) ? directory : process.cwd(),
         fn: () => TuiConfig.get(),
-      })
+      });
       await tui({
         url: args.url,
         config,
@@ -80,9 +82,9 @@ export const AttachCommand = cmd({
         },
         directory,
         headers,
-      })
+      });
     } finally {
-      unguard?.()
+      unguard?.();
     }
   },
-})
+});

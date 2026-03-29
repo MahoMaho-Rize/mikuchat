@@ -1,5 +1,8 @@
 // ChatSyncProvider - replaces SyncProvider
 // Manages session list + messages, synced from DB + live WS events
+//
+// Design: DB is read on startup and session switch only.
+// Live WS messages update the store directly (incremental), never re-query.
 import { createSignal, onMount, onCleanup, batch } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { createSimpleContext } from "./helper";
@@ -11,6 +14,7 @@ import {
   pinSession,
   searchSessions,
 } from "../../qq";
+import { segmentsToPreview } from "../../qq/bridge";
 import type { QCSession, QCMessage, OB11Message } from "../../qq";
 
 export const { use: useChatSync, provider: ChatSyncProvider } =
@@ -33,7 +37,8 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
 
       const [ready, setReady] = createSignal(false);
 
-      // Load sessions from DB
+      // === DB reads: only on startup and explicit session switch ===
+
       function loadSessions() {
         try {
           const sessions = getSessions({ onlyActive: false, limit: 100 });
@@ -43,7 +48,6 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
         }
       }
 
-      // Load messages for a session
       function loadMessages(sessionId: string) {
         try {
           const msgs = getMessages(sessionId, { limit: 200 });
@@ -53,13 +57,14 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
         }
       }
 
-      // Initial load
+      // Initial load from DB
       onMount(() => {
         loadSessions();
         setReady(true);
       });
 
-      // Listen for live events to update store in realtime
+      // === Live event handler: incremental store updates, no DB reads ===
+
       const unsub = qq.onEvent((event) => {
         if (event.post_type !== "message" && event.post_type !== "message_sent")
           return;
@@ -72,36 +77,74 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
               ? `private_${msg.target_id || msg.user_id}`
               : `private_${msg.user_id}`;
 
-        // Reload sessions to pick up DB changes from bridge
-        loadSessions();
+        const preview = segmentsToPreview(msg.message);
+        const sender = msg.sender.card || msg.sender.nickname;
+        const displayPreview =
+          msg.message_type === "group" ? `${sender}: ${preview}` : preview;
+        const isSelf = msg.post_type === "message_sent";
 
-        // If we have this session's messages loaded, append the new one
-        if (store.messages[sessionId]) {
-          const newMsg: QCMessage = {
-            id: 0,
-            session_id: sessionId,
-            message_id: msg.message_id,
-            user_id: msg.user_id,
-            nickname: msg.sender.nickname,
-            card: msg.sender.card,
-            role: msg.sender.role,
-            segments: msg.message,
-            raw_message: msg.raw_message,
-            time: msg.time,
-          };
-          setStore(
-            "messages",
-            sessionId,
-            produce((draft: any) => {
-              // Avoid duplicates
-              if (
-                !draft.some((m: QCMessage) => m.message_id === msg.message_id)
-              ) {
-                draft.push(newMsg);
-              }
-            }),
-          );
-        }
+        // --- Update session list in-place (no DB read) ---
+        batch(() => {
+          const idx = store.sessions.findIndex((s) => s.id === sessionId);
+          if (idx >= 0) {
+            // Existing session: update last_message + unread
+            setStore("sessions", idx, {
+              last_message: displayPreview,
+              last_message_time: msg.time,
+              unread_count: isSelf
+                ? store.sessions[idx].unread_count
+                : store.sessions[idx].id === store.activeSessionId
+                  ? 0
+                  : store.sessions[idx].unread_count + 1,
+            });
+          } else {
+            // New session: insert at top
+            const name =
+              msg.message_type === "group"
+                ? (msg as any).group_name || `Group ${msg.group_id}`
+                : msg.sender.card || msg.sender.nickname || `${msg.user_id}`;
+            setStore(
+              "sessions",
+              produce((draft: QCSession[]) => {
+                draft.unshift({
+                  id: sessionId,
+                  type: msg.message_type,
+                  target_id:
+                    msg.message_type === "group" ? msg.group_id! : msg.user_id,
+                  name,
+                  avatar_url: null,
+                  last_message: displayPreview,
+                  last_message_time: msg.time,
+                  unread_count: isSelf ? 0 : 1,
+                  pinned: 0,
+                });
+              }),
+            );
+          }
+
+          // --- Append message to loaded session (no DB read) ---
+          if (store.messages[sessionId]) {
+            setStore(
+              "messages",
+              sessionId,
+              produce((draft: QCMessage[]) => {
+                if (draft.some((m) => m.message_id === msg.message_id)) return;
+                draft.push({
+                  id: 0,
+                  session_id: sessionId,
+                  message_id: msg.message_id,
+                  user_id: msg.user_id,
+                  nickname: msg.sender.nickname,
+                  card: msg.sender.card,
+                  role: msg.sender.role,
+                  segments: msg.message,
+                  raw_message: msg.raw_message,
+                  time: msg.time,
+                });
+              }),
+            );
+          }
+        });
       });
 
       onCleanup(unsub);
@@ -120,15 +163,16 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
         setActiveSession(sessionId: string | null) {
           setStore("activeSessionId", sessionId);
           if (sessionId) {
-            // Always reload messages from DB to pick up any new history
+            // Load from DB only when switching to a session
             loadMessages(sessionId);
-            // Mark as read
             try {
               markRead(sessionId);
-            } catch (e) {
-              console.error("Failed to mark read:", e);
+            } catch {}
+            // Update unread in-store directly instead of full reload
+            const idx = store.sessions.findIndex((s) => s.id === sessionId);
+            if (idx >= 0) {
+              setStore("sessions", idx, "unread_count", 0);
             }
-            loadSessions(); // refresh unread counts
           }
         },
 
@@ -143,8 +187,7 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
         search(query: string): QCSession[] {
           try {
             return searchSessions(query);
-          } catch (e) {
-            console.error("Failed to search sessions:", e);
+          } catch {
             return [];
           }
         },
@@ -152,12 +195,15 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
         pin(sessionId: string, pinned: boolean) {
           try {
             pinSession(sessionId, pinned);
-            loadSessions();
-          } catch (e) {
-            console.error("Failed to pin session:", e);
-          }
+            // Update in-store
+            const idx = store.sessions.findIndex((s) => s.id === sessionId);
+            if (idx >= 0) {
+              setStore("sessions", idx, "pinned", pinned ? 1 : 0);
+            }
+          } catch {}
         },
 
+        // Full refresh — only called from home page interval, not per-message
         refresh() {
           loadSessions();
         },
@@ -180,26 +226,20 @@ export const { use: useChatSync, provider: ChatSyncProvider } =
             });
             if (older.length === 0) {
               setStore("loading", sessionId, false);
-              return false; // no more history
+              return false;
             }
             setStore(
               "messages",
               sessionId,
-              produce((draft: any) => {
-                // Deduplicate by message_id before prepending
-                const existing = new Set(
-                  draft.map((m: QCMessage) => m.message_id),
-                );
-                const fresh = older.filter(
-                  (m: QCMessage) => !existing.has(m.message_id),
-                );
+              produce((draft: QCMessage[]) => {
+                const existing = new Set(draft.map((m) => m.message_id));
+                const fresh = older.filter((m) => !existing.has(m.message_id));
                 draft.unshift(...fresh);
               }),
             );
             setStore("loading", sessionId, false);
             return true;
-          } catch (e) {
-            console.error("Failed to load more messages:", e);
+          } catch {
             setStore("loading", sessionId, false);
             return false;
           }

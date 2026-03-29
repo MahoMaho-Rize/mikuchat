@@ -1,36 +1,43 @@
-import { createStore } from "solid-js/store"
-import { createSimpleContext } from "./helper"
+import { createStore } from "solid-js/store";
+import { createSimpleContext } from "./helper";
 
 export type HomeRoute = {
-  type: "home"
-}
+  type: "home";
+  initialPrompt?: any;
+  workspaceID?: string;
+};
 
 export type ChatRoute = {
-  type: "chat"
-  sessionId: string
-}
+  type: "chat";
+  sessionId: string;
+};
 
-export type Route = HomeRoute | ChatRoute
+export type SessionRoute = {
+  type: "session";
+  sessionID: string;
+};
+
+export type Route = HomeRoute | ChatRoute | SessionRoute;
 
 export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",
   init: () => {
-    const [store, setStore] = createStore<Route>({ type: "home" })
+    const [store, setStore] = createStore<Route>({ type: "home" });
 
     return {
       get data() {
-        return store
+        return store;
       },
       navigate(route: Route) {
-        setStore(route)
+        setStore(route);
       },
-    }
+    };
   },
-})
+});
 
-export type RouteContext = ReturnType<typeof useRoute>
+export type RouteContext = ReturnType<typeof useRoute>;
 
 export function useRouteData<T extends Route["type"]>(type: T) {
-  const route = useRoute()
-  return route.data as Extract<Route, { type: typeof type }>
+  const route = useRoute();
+  return route.data as Extract<Route, { type: typeof type }>;
 }

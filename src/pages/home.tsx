@@ -5,6 +5,7 @@ import {
   createEffect,
   For,
   onMount,
+  onCleanup,
   Show,
 } from "solid-js";
 import { useTheme } from "@tui/context/theme";
@@ -53,6 +54,7 @@ export function QCHome() {
   const sync = useChatSync();
   const exit = useExit();
   const [cmdLog, setCmdLog] = createSignal<string[]>([]);
+  let logUnsub: (() => void) | null = null;
 
   let prompt: ChatPromptRef;
 
@@ -60,10 +62,9 @@ export function QCHome() {
 
   // Refresh sessions while connected
   createEffect(() => {
-    if (connected()) {
-      const interval = setInterval(() => sync.refresh(), 2000);
-      return () => clearInterval(interval);
-    }
+    if (!connected()) return;
+    const interval = setInterval(() => sync.refresh(), 2000);
+    onCleanup(() => clearInterval(interval));
   });
 
   const sessions = createMemo(() => sync.sessions);
@@ -92,7 +93,8 @@ export function QCHome() {
   async function handleSubmit(text: string) {
     if (text === "/start") {
       setCmdLog((p) => [...p, "> Starting NapCat..."]);
-      qq.napcat.onLog((line) => {
+      logUnsub?.();
+      logUnsub = qq.napcat.onLog((line) => {
         setCmdLog((p) => [...p.slice(-30), line]);
       });
       await qq.start();

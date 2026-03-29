@@ -1,10 +1,12 @@
-export const logo = `  ___  ____
- / _ \\/ ___|
-| | | \\___ \\
-| |_| |___) |
- \\__\\_\\____/`
+export const logo = {
+  left: [
+    "  ___  ____",
+    " / _ \\/ ___|",
+    "| | | \\___ \\",
+    "| |_| |___) |",
+    " \\__\\_\\____/",
+  ],
+  right: ["", "", "", "", ""],
+};
 
-export const marks = {
-  shadow: "░",
-  highlight: "█",
-}
+export const marks = "░█";
